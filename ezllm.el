@@ -31,16 +31,15 @@
         (error nil)))))
 
 (defconst ezllm-anthropic
-  '(:auth-header "X-API-Key"
+  '(:auth-header "x-api-key"
     :auth-value-prefix ""
     :extra-headers (("anthropic-version" . "2023-06-01"))
     :request-formatter
     (lambda (prompt system-prompt model max-tokens)
       `(("model" . ,model)
-        ("messages" . [((role . "system")
-                        (content . ,system-prompt))
-                       ((role . "user")
+        ("messages" . [((role . "user")
                         (content . ,prompt))])
+        ("system" . ,system-prompt)
         ("stream" . t)
         ("max_tokens" . ,max-tokens)))
     :response-parser
@@ -49,11 +48,9 @@
           (let* ((json-object-type 'plist)
                  (json-key-type 'keyword)
                  (parsed (json-read-from-string data))
-                 (type (plist-get parsed :type)))
-            (when (string= type "content_block_delta")
-              (let* ((delta (plist-get parsed :delta))
-                     (text (plist-get delta :text)))
-                text)))
+                 (delta (plist-get parsed :delta))
+                 (text (plist-get delta :text)))
+            text)
         (error nil)))))
 
 ;; Configuration function
@@ -96,7 +93,7 @@
 ;; Handle API response
 (defun ezllm-handle-response (status)
   (if (plist-get status :error)
-      (message "Request failed: %s" (plist-get status :error))
+      (message "Request failed: %S" (plist-get status :error))
     (let* ((provider-config (gethash ezllm-current-provider ezllm-providers))
            (spec (plist-get provider-config :spec))
            (response-parser (plist-get spec :response-parser)))
@@ -137,6 +134,7 @@
          (url-request-method "POST")
          (url-request-extra-headers
           `(("Content-Type" . "application/json")
+            ("Accept" . "text/event-stream")
             (,auth-header . ,(concat auth-value-prefix api-key))
             ,@extra-headers))
          (url-request-data
