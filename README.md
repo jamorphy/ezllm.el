@@ -20,4 +20,4 @@ It's tailored to my preferences but I'm open to PRs.
 (setq ezllm-max-tokens 3500) ;; default 1024
 (global-set-key (kbd "C-c m") 'ezllm-stream-region)
 ```
-Now type in a query, select it, and invoke `llm-stream-region`
+Now type in a query, select it, and invoke `ezllm-stream-region`
