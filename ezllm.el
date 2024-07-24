@@ -1,32 +1,32 @@
 (require 'url)
 (require 'json)
 
-(setq llm-api-key "")
-(setq llm-endpoint "")
-(setq llm-model "")
-(setq llm-system-prompt "You are a helpful assistant.")
-(setq llm-max-tokens 1024)
+(setq ezllm-api-key "")
+(setq ezllm-endpoint "")
+(setq ezllm-model "")
+(setq ezllm-system-prompt "You are a helpful assistant.")
+(setq ezllm-max-tokens 1024)
 
-(defun llm-stream-request (prompt)
+(defun ezllm-stream-request (prompt)
   (let* ((url-request-method "POST")
          (url-request-extra-headers
           `(("Content-Type" . "application/json")
-            ("Authorization" . ,(concat "Bearer " llm-api-key))))
+            ("Authorization" . ,(concat "Bearer " ezllm-api-key))))
          (request-data `(("messages" . [((role . "system")
-                                         (content . ,llm-system-prompt))
+                                         (content . ,ezllm-system-prompt))
                                         ((role . "user")
                                          (content . ,prompt))])
-                         ("model" . ,llm-model)
-                         ("max_tokens" . ,llm-max-tokens)
+                         ("model" . ,ezllm-model)
+                         ("max_tokens" . ,ezllm-max-tokens)
                          ("stream" . t)))
          (url-request-data (json-encode request-data))
          (response-buffer (generate-new-buffer " *llm-response*")))
-    (url-retrieve llm-endpoint 
-                  #'llm-stream-callback 
+    (url-retrieve ezllm-endpoint
+                  #'ezllm-stream-callback
                   (list response-buffer (current-buffer))
                   t)))
 
-(defun llm-stream-callback (status response-buffer target-buffer)
+(defun ezllm-stream-callback (status response-buffer target-buffer)
   "Handle the response from the API."
   (unless (plist-get status :error)
     (let ((data (buffer-string)))
@@ -36,9 +36,9 @@
         (goto-char (point-min))
         (re-search-forward "\n\n" nil t)
         (delete-region (point-min) (point))
-        (llm-stream-process-chunks target-buffer)))))
+        (ezllm-stream-process-chunks target-buffer)))))
 
-(defun llm-stream-process-chunks (target-buffer)
+(defun ezllm-stream-process-chunks (target-buffer)
   "Process the chunks of data in the response buffer."
   (while (not (eobp))
     (let ((chunk (buffer-substring (point) (line-end-position))))
@@ -56,16 +56,16 @@
                     (redisplay t))))))))
     (forward-line))))
 
-(defun llm-stream-region (start end)
+(defun ezllm-stream-region (start end)
   "Use the highlighted region as a prompt for the LLM and process the streaming response."
   (interactive "r")
   (cond
-   ((or (null llm-api-key) (string-empty-p llm-api-key))
-    (message "Error: API key is not set. Please set llm-api-key."))
-   ((or (null llm-endpoint) (string-empty-p llm-endpoint))
-    (message "Error: Endpoint URL is not set. Please set llm-endpoint."))
-   ((or (null llm-model) (string-empty-p llm-model))
-    (message "Error: Model is not set. Please set llm-model."))
+   ((or (null ezllm-api-key) (string-empty-p ezllm-api-key))
+    (message "Error: API key is not set. Please set ezllm-api-key."))
+   ((or (null ezllm-endpoint) (string-empty-p ezllm-endpoint))
+    (message "Error: Endpoint URL is not set. Please set ezllm-endpoint."))
+   ((or (null ezllm-model) (string-empty-p ezllm-model))
+    (message "Error: Model is not set. Please set ezllm-model."))
    ((not (use-region-p))
     (message "No region selected. Please highlight text to use as a prompt."))
    (t
@@ -73,6 +73,6 @@
       (deactivate-mark)
       (goto-char end)
       (insert "\n\n")
-      (llm-stream-request prompt)))))
+      (ezllm-stream-request prompt)))))
 
 (provide 'ezllm)
