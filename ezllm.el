@@ -59,14 +59,15 @@
 ;; Configuration function
 (defun ezllm-configure-provider (&rest args)
   "Configure a provider with the given ARGS."
-  (let* ((spec (plist-get args :spec))
+  (let* ((name (or (plist-get args :name)
+                   (error "Provider name is required")))
+         (spec (plist-get args :spec))
          (endpoint (plist-get args :endpoint))
          (model (plist-get args :model))
          (max-tokens (plist-get args :max-tokens))
          (api-key (plist-get args :api-key))
-         (system-prompt (plist-get args :system-prompt))
-         (provider-name (symbol-name (car spec))))
-    (puthash provider-name
+         (system-prompt (plist-get args :system-prompt)))
+    (puthash name
              (list :spec spec
                    :endpoint endpoint
                    :model model
@@ -75,10 +76,10 @@
                    :system-prompt system-prompt)
              ezllm-providers)
     (message "Debug: Provider %s configured. Current providers: %s" 
-             provider-name (hash-table-keys ezllm-providers))
+             name (hash-table-keys ezllm-providers))
     (unless ezllm-current-provider
-      (setq ezllm-current-provider provider-name))
-    (message "Provider %s configured successfully" provider-name)))
+      (setq ezllm-current-provider name))
+    (message "Provider %s configured successfully" name)))
 
 ;; Set current provider
 (defun ezllm-set-provider (provider-name)
