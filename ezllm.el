@@ -1,78 +1,156 @@
 (require 'url)
 (require 'json)
 
-(setq ezllm-api-key "")
-(setq ezllm-endpoint "")
-(setq ezllm-model "")
-(setq ezllm-system-prompt "You are a helpful assistant.")
-(setq ezllm-max-tokens 1024)
+;; Provider registry and current provider
+(defvar ezllm-providers (make-hash-table :test 'equal))
+(defvar ezllm-current-provider nil)
 
+;; Provider specs
+(defconst ezllm-openai
+  '(:auth-header "Authorization"
+    :auth-value-prefix "Bearer "
+    :request-formatter
+    (lambda (prompt system-prompt model max-tokens)
+      `(("model" . ,model)
+        ("messages" . [((role . "system")
+                        (content . ,system-prompt))
+                       ((role . "user")
+                        (content . ,prompt))])
+        ("stream" . t)
+        ("max_tokens" . ,max-tokens)))
+    :response-parser
+    (lambda (data)
+      (condition-case nil
+          (let* ((json-object-type 'plist)
+                 (json-key-type 'keyword)
+                 (parsed (json-read-from-string data))
+                 (choices (plist-get parsed :choices))
+                 (delta (plist-get (aref choices 0) :delta))
+                 (content (plist-get delta :content)))
+            content)
+        (error nil)))))
+
+(defconst ezllm-anthropic
+  '(:auth-header "X-API-Key"
+    :auth-value-prefix ""
+    :extra-headers (("anthropic-version" . "2023-06-01"))
+    :request-formatter
+    (lambda (prompt system-prompt model max-tokens)
+      `(("model" . ,model)
+        ("messages" . [((role . "system")
+                        (content . ,system-prompt))
+                       ((role . "user")
+                        (content . ,prompt))])
+        ("stream" . t)
+        ("max_tokens" . ,max-tokens)))
+    :response-parser
+    (lambda (data)
+      (condition-case nil
+          (let* ((json-object-type 'plist)
+                 (json-key-type 'keyword)
+                 (parsed (json-read-from-string data))
+                 (type (plist-get parsed :type)))
+            (when (string= type "content_block_delta")
+              (let* ((delta (plist-get parsed :delta))
+                     (text (plist-get delta :text)))
+                text)))
+        (error nil)))))
+
+;; Configuration function
+(defun ezllm-configure-provider (&rest args)
+  "Configure a provider with the given ARGS."
+  (let* ((spec (plist-get args :spec))
+         (endpoint (plist-get args :endpoint))
+         (model (plist-get args :model))
+         (max-tokens (plist-get args :max-tokens))
+         (api-key (plist-get args :api-key))
+         (system-prompt (plist-get args :system-prompt))
+         (provider-name (symbol-name (car spec))))
+    (puthash provider-name
+             (list :spec spec
+                   :endpoint endpoint
+                   :model model
+                   :max-tokens max-tokens
+                   :api-key api-key
+                   :system-prompt system-prompt)
+             ezllm-providers)
+    (message "Debug: Provider %s configured. Current providers: %s" 
+             provider-name (hash-table-keys ezllm-providers))
+    (unless ezllm-current-provider
+      (setq ezllm-current-provider provider-name))
+    (message "Provider %s configured successfully" provider-name)))
+
+;; Set current provider
+(defun ezllm-set-provider (provider-name)
+  "Set the current provider to PROVIDER-NAME."
+  (let ((provider-symbol (if (symbolp provider-name) provider-name (intern provider-name))))
+    (message "Debug: Trying to set provider '%s'" provider-symbol)
+    (message "Debug: Current providers: %s" (hash-table-keys ezllm-providers))
+    (if (gethash provider-symbol ezllm-providers)
+        (progn
+          (setq ezllm-current-provider provider-symbol)
+          (message "Current provider set to %s" provider-symbol))
+      (message "Provider %s not configured. Please configure it first using ezllm-configure-provider." provider-symbol))))
+
+;; Handle API response
+(defun ezllm-handle-response (status)
+  (if (plist-get status :error)
+      (message "Request failed: %s" (plist-get status :error))
+    (let* ((provider-config (gethash ezllm-current-provider ezllm-providers))
+           (spec (plist-get provider-config :spec))
+           (response-parser (plist-get spec :response-parser)))
+      (goto-char (point-min))
+      (re-search-forward "^$" nil t)
+      (forward-char)
+      (delete-region (point-min) (point))
+      (while (not (eobp))
+        (let ((line (buffer-substring (point) (line-end-position))))
+          (when (string-prefix-p "data: " line)
+            (let ((data (substring line 6)))
+              (unless (string= data "[DONE]")
+                (condition-case nil
+                    (let ((content (funcall response-parser data)))
+                      (when content
+                        (with-current-buffer ezllm-output-buffer
+                          (goto-char ezllm-output-marker)
+                          (insert content)
+                          (setq ezllm-output-marker (point-marker))
+                          (redisplay t))))
+                  (error nil)))))
+          (forward-line))))))
+
+;; Make streaming request
 (defun ezllm-stream-request (prompt)
-  (let* ((url-request-method "POST")
+  "Make a streaming request with the given PROMPT."
+  (let* ((provider-config (gethash ezllm-current-provider ezllm-providers))
+         (spec (plist-get provider-config :spec))
+         (endpoint (plist-get provider-config :endpoint))
+         (model (plist-get provider-config :model))
+         (max-tokens (plist-get provider-config :max-tokens))
+         (api-key (plist-get provider-config :api-key))
+         (system-prompt (plist-get provider-config :system-prompt))
+         (auth-header (plist-get spec :auth-header))
+         (auth-value-prefix (plist-get spec :auth-value-prefix))
+         (extra-headers (plist-get spec :extra-headers))
+         (request-formatter (plist-get spec :request-formatter))
+         (url-request-method "POST")
          (url-request-extra-headers
           `(("Content-Type" . "application/json")
-            ("Authorization" . ,(concat "Bearer " ezllm-api-key))))
-         (request-data `(("messages" . [((role . "system")
-                                         (content . ,ezllm-system-prompt))
-                                        ((role . "user")
-                                         (content . ,prompt))])
-                         ("model" . ,ezllm-model)
-                         ("max_tokens" . ,ezllm-max-tokens)
-                         ("stream" . t)))
-         (url-request-data (json-encode request-data))
-         (response-buffer (generate-new-buffer " *llm-response*")))
-    (url-retrieve ezllm-endpoint
-                  #'ezllm-stream-callback
-                  (list response-buffer (current-buffer))
-                  t)))
+            (,auth-header . ,(concat auth-value-prefix api-key))
+            ,@extra-headers))
+         (url-request-data
+          (json-encode (funcall request-formatter prompt system-prompt model max-tokens))))
+    (url-retrieve endpoint #'ezllm-handle-response nil t)))
 
-(defun ezllm-stream-callback (status response-buffer target-buffer)
-  "Handle the response from the API."
-  (unless (plist-get status :error)
-    (let ((data (buffer-string)))
-      (with-current-buffer response-buffer
-        (erase-buffer)
-        (insert data)
-        (goto-char (point-min))
-        (re-search-forward "\n\n" nil t)
-        (delete-region (point-min) (point))
-        (ezllm-stream-process-chunks target-buffer)))))
-
-(defun ezllm-stream-process-chunks (target-buffer)
-  "Process the chunks of data in the response buffer."
-  (while (not (eobp))
-    (let ((chunk (buffer-substring (point) (line-end-position))))
-      (when (string-prefix-p "data: " chunk)
-        (let ((json-string (substring chunk 6)))
-          (unless (string= json-string "[DONE]")
-            (ignore-errors
-              (let* ((json-object (json-read-from-string json-string))
-                     (choices (assoc-default 'choices json-object))
-                     (delta (and choices (assoc-default 'delta (aref choices 0))))
-                     (content (and delta (assoc-default 'content delta))))
-                (when content
-                  (with-current-buffer target-buffer
-                    (insert content)
-                    (redisplay t))))))))
-    (forward-line))))
-
+;; User-facing function to stream from selected region
 (defun ezllm-stream-region (start end)
-  "Use the highlighted region as a prompt for the LLM and process the streaming response."
+  "Stream LLM response for the region between START and END."
   (interactive "r")
-  (cond
-   ((or (null ezllm-api-key) (string-empty-p ezllm-api-key))
-    (message "Error: API key is not set. Please set ezllm-api-key."))
-   ((or (null ezllm-endpoint) (string-empty-p ezllm-endpoint))
-    (message "Error: Endpoint URL is not set. Please set ezllm-endpoint."))
-   ((or (null ezllm-model) (string-empty-p ezllm-model))
-    (message "Error: Model is not set. Please set ezllm-model."))
-   ((not (use-region-p))
-    (message "No region selected. Please highlight text to use as a prompt."))
-   (t
-    (let ((prompt (buffer-substring-no-properties start end)))
-      (deactivate-mark)
-      (goto-char end)
-      (insert "\n\n")
-      (ezllm-stream-request prompt)))))
+  (let ((prompt (buffer-substring-no-properties start end)))
+    (setq ezllm-output-buffer (current-buffer))
+    (goto-char end)
+    (insert "\n\n")
+    (setq ezllm-output-marker (point-marker))
+    (ezllm-stream-request prompt)))
 
 (provide 'ezllm)
