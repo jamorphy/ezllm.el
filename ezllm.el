@@ -1,5 +1,18 @@
 (require 'url)
 (require 'json)
+(require 'cl-lib)
+
+(cl-defstruct (ezllm-provider (:constructor ezllm-make-provider))
+  name
+  spec
+  endpoint
+  model
+  max-tokens
+  api-key
+  system-prompt)
+
+(defvar ezllm-provider-names '()
+  "List of configured provider names.")
 
 ;; Provider registry and current provider
 (defvar ezllm-providers (make-hash-table :test 'equal))
@@ -56,46 +69,34 @@
 ;; Configuration function
 (defun ezllm-configure-provider (&rest args)
   "Configure a provider with the given ARGS."
-  (let* ((name (or (plist-get args :name)
-                   (error "Provider name is required")))
-         (spec (plist-get args :spec))
-         (endpoint (plist-get args :endpoint))
-         (model (plist-get args :model))
-         (max-tokens (plist-get args :max-tokens))
-         (api-key (plist-get args :api-key))
-         (system-prompt (plist-get args :system-prompt)))
-    (puthash name
-             (list :spec spec
-                   :endpoint endpoint
-                   :model model
-                   :max-tokens max-tokens
-                   :api-key api-key
-                   :system-prompt system-prompt)
-             ezllm-providers)
-    (message "Debug: Provider %s configured. Current providers: %s" 
-             name (hash-table-keys ezllm-providers))
-    (unless ezllm-current-provider
-      (setq ezllm-current-provider name))
-    (message "Provider %s configured successfully" name)))
+  (let* ((name (plist-get args :name))
+         (provider (apply #'ezllm-make-provider args)))
+    (if name
+        (progn
+          (puthash name provider ezllm-providers)
+          (add-to-list 'ezllm-provider-names name)
+          (unless ezllm-current-provider
+            (setq ezllm-current-provider name)))
+      (error "Provider name is required"))))
 
 ;; Set current provider
 (defun ezllm-set-provider (provider-name)
   "Set the current provider to PROVIDER-NAME."
-  (let ((provider-symbol (if (symbolp provider-name) provider-name (intern provider-name))))
-    (message "Debug: Trying to set provider '%s'" provider-symbol)
-    (message "Debug: Current providers: %s" (hash-table-keys ezllm-providers))
-    (if (gethash provider-symbol ezllm-providers)
-        (progn
-          (setq ezllm-current-provider provider-symbol)
-          (message "Current provider set to %s" provider-symbol))
-      (message "Provider %s not configured. Please configure it first using ezllm-configure-provider." provider-symbol))))
+  (interactive
+   (list (intern (completing-read "Select provider: "
+                                  (mapcar #'symbol-name ezllm-provider-names)
+                                  nil t))))
+  (if (gethash provider-name ezllm-providers)
+      (progn
+        (setq ezllm-current-provider provider-name))
+    (message "Provider %s not configured. Please configure it first using ezllm-configure-provider." provider-name)))
 
 ;; Handle API response
 (defun ezllm-handle-response (status)
   (if (plist-get status :error)
       (message "Request failed: %S" (plist-get status :error))
     (let* ((provider-config (gethash ezllm-current-provider ezllm-providers))
-           (spec (plist-get provider-config :spec))
+           (spec (ezllm-provider-spec provider-config))
            (response-parser (plist-get spec :response-parser)))
       (goto-char (point-min))
       (re-search-forward "^$" nil t)
@@ -110,23 +111,23 @@
                     (let ((content (funcall response-parser data)))
                       (when content
                         (with-current-buffer ezllm-output-buffer
-                          (goto-char ezllm-output-marker)
-                          (insert content)
-                          (setq ezllm-output-marker (point-marker))
-                          (redisplay t))))
+                          (let ((decoded-content (decode-coding-string content 'utf-8)))
+                            (goto-char ezllm-output-marker)
+                            (insert decoded-content)
+                            (setq ezllm-output-marker (point-marker))
+                            (redisplay t)))))
                   (error nil)))))
           (forward-line))))))
 
-;; Make streaming request
 (defun ezllm-stream-request (prompt)
   "Make a streaming request with the given PROMPT."
-  (let* ((provider-config (gethash ezllm-current-provider ezllm-providers))
-         (spec (plist-get provider-config :spec))
-         (endpoint (plist-get provider-config :endpoint))
-         (model (plist-get provider-config :model))
-         (max-tokens (plist-get provider-config :max-tokens))
-         (api-key (plist-get provider-config :api-key))
-         (system-prompt (plist-get provider-config :system-prompt))
+  (let* ((provider (gethash ezllm-current-provider ezllm-providers))
+         (spec (ezllm-provider-spec provider))
+         (endpoint (ezllm-provider-endpoint provider))
+         (model (ezllm-provider-model provider))
+         (max-tokens (ezllm-provider-max-tokens provider))
+         (api-key (ezllm-provider-api-key provider))
+         (system-prompt (ezllm-provider-system-prompt provider))
          (auth-header (plist-get spec :auth-header))
          (auth-value-prefix (plist-get spec :auth-value-prefix))
          (extra-headers (plist-get spec :extra-headers))
@@ -141,15 +142,35 @@
           (json-encode (funcall request-formatter prompt system-prompt model max-tokens))))
     (url-retrieve endpoint #'ezllm-handle-response nil t)))
 
-;; User-facing function to stream from selected region
-(defun ezllm-stream-region (start end)
-  "Stream LLM response for the region between START and END."
-  (interactive "r")
-  (let ((prompt (buffer-substring-no-properties start end)))
-    (setq ezllm-output-buffer (current-buffer))
-    (goto-char end)
-    (insert "\n\n")
-    (setq ezllm-output-marker (point-marker))
-    (ezllm-stream-request prompt)))
+(defun ezllm-send (&optional input-text)
+  "Stream LLM response for the given INPUT-TEXT, selected region, current line, or do nothing.
+   If INPUT-TEXT is provided, use that as the prompt.
+   If INPUT-TEXT is nil and a region is selected, use the selected region as the prompt.
+   If no region is selected, use the current line as the prompt.
+   If the current line is empty or just whitespace, do nothing."
+  (interactive
+   (if (use-region-p)
+       (list (buffer-substring-no-properties (region-beginning) (region-end)))
+     (list (buffer-substring-no-properties (line-beginning-position) (line-end-position)))))
+  (let ((prompt (if input-text
+                    input-text
+                  (string-trim (or (and (use-region-p)
+                                        (buffer-substring-no-properties (region-beginning) (region-end)))
+                                   (buffer-substring-no-properties (line-beginning-position) (line-end-position)))))))
+    (if (string-empty-p prompt)
+        (message "No text provided or selected, and current line is empty. Nothing to send.")
+      (set-buffer-file-coding-system 'utf-8)
+      (setq ezllm-output-buffer (current-buffer))
+      (if (called-interactively-p 'any)
+          (progn
+            (if (use-region-p)
+                (goto-char (line-end-position))
+              (end-of-line))
+            (insert "\n\n"))
+        (goto-char (point-max))
+        (unless (looking-back "\n\n" (- (point) 2))
+          (insert "\n\n")))
+      (setq ezllm-output-marker (point-marker))
+      (ezllm-stream-request prompt))))
 
 (provide 'ezllm)
