@@ -1,5 +1,7 @@
 # ezllm.el
 
+WARNING: not stable, use as reference for now
+
 Basic setup for LLM streaming to buffer. I don't see myself adding any huge overhauls but use with caution.
 
 It's tailored to my preferences but I'm open to PRs. I'll put my full personal config in another branch.

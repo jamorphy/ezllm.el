@@ -79,18 +79,6 @@
             (setq ezllm-current-provider name)))
       (error "Provider name is required"))))
 
-;; Set current provider
-(defun ezllm-set-provider (provider-name)
-  "Set the current provider to PROVIDER-NAME."
-  (interactive
-   (list (intern (completing-read "Select provider: "
-                                  (mapcar #'symbol-name ezllm-provider-names)
-                                  nil t))))
-  (if (gethash provider-name ezllm-providers)
-      (progn
-        (setq ezllm-current-provider provider-name))
-    (message "Provider %s not configured. Please configure it first using ezllm-configure-provider." provider-name)))
-
 ;; Handle API response
 (defun ezllm-handle-response (status)
   (if (plist-get status :error)
@@ -119,15 +107,15 @@
                   (error nil)))))
           (forward-line))))))
 
-(defun ezllm-stream-request (prompt)
-  "Make a streaming request with the given PROMPT."
-  (let* ((provider (gethash ezllm-current-provider ezllm-providers))
-         (spec (ezllm-provider-spec provider))
-         (endpoint (ezllm-provider-endpoint provider))
-         (model (ezllm-provider-model provider))
-         (max-tokens (ezllm-provider-max-tokens provider))
-         (api-key (ezllm-provider-api-key provider))
-         (system-prompt (ezllm-provider-system-prompt provider))
+(defun ezllm-stream-request (prompt provider)
+  "Make a streaming request with the given PROMPT using the specified PROVIDER."
+  (let* ((provider-config (gethash provider ezllm-providers))
+         (spec (ezllm-provider-spec provider-config))
+         (endpoint (ezllm-provider-endpoint provider-config))
+         (model (ezllm-provider-model provider-config))
+         (max-tokens (ezllm-provider-max-tokens provider-config))
+         (api-key (ezllm-provider-api-key provider-config))
+         (system-prompt (ezllm-provider-system-prompt provider-config))
          (auth-header (plist-get spec :auth-header))
          (auth-value-prefix (plist-get spec :auth-value-prefix))
          (extra-headers (plist-get spec :extra-headers))
@@ -140,23 +128,21 @@
             ,@extra-headers))
          (url-request-data
           (json-encode (funcall request-formatter prompt system-prompt model max-tokens))))
+    (setq ezllm-current-provider provider) ; Set the current provider for response handling
     (url-retrieve endpoint #'ezllm-handle-response nil t)))
 
-(defun ezllm-send (&optional input-text)
-  "Stream LLM response for the given INPUT-TEXT, selected region, current line, or do nothing.
-   If INPUT-TEXT is provided, use that as the prompt.
-   If INPUT-TEXT is nil and a region is selected, use the selected region as the prompt.
-   If no region is selected, use the current line as the prompt.
-   If the current line is empty or just whitespace, do nothing."
-  (interactive
-   (if (use-region-p)
-       (list (buffer-substring-no-properties (region-beginning) (region-end)))
-     (list (buffer-substring-no-properties (line-beginning-position) (line-end-position)))))
-  (let ((prompt (if input-text
-                    input-text
-                  (string-trim (or (and (use-region-p)
-                                        (buffer-substring-no-properties (region-beginning) (region-end)))
-                                   (buffer-substring-no-properties (line-beginning-position) (line-end-position)))))))
+(defun ezllm-send (&optional input-text provider)
+  "Stream LLM response for the given INPUT-TEXT, selected region, or current line.
+If INPUT-TEXT is provided, use that as the prompt.
+If INPUT-TEXT is nil, use the selected region or current line as the prompt.
+If PROVIDER is specified, use that provider; otherwise, use the current provider."
+  (interactive)
+  (let* ((prompt (cond
+                  (input-text input-text)
+                  ((use-region-p)
+                   (buffer-substring-no-properties (region-beginning) (region-end)))
+                  (t (buffer-substring-no-properties (line-beginning-position) (line-end-position)))))
+         (current-provider (or provider ezllm-current-provider)))
     (if (string-empty-p prompt)
         (message "No text provided or selected, and current line is empty. Nothing to send.")
       (set-buffer-file-coding-system 'utf-8)
@@ -164,13 +150,13 @@
       (if (called-interactively-p 'any)
           (progn
             (if (use-region-p)
-                (goto-char (line-end-position))
+                (goto-char (region-end))
               (end-of-line))
             (insert "\n\n"))
         (goto-char (point-max))
         (unless (looking-back "\n\n" (- (point) 2))
           (insert "\n\n")))
       (setq ezllm-output-marker (point-marker))
-      (ezllm-stream-request prompt))))
+      (ezllm-stream-request prompt current-provider))))
 
 (provide 'ezllm)
