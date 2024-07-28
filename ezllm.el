@@ -48,10 +48,9 @@
     :auth-value-prefix ""
     :extra-headers (("anthropic-version" . "2023-06-01"))
     :request-formatter
-    (lambda (prompt system-prompt model max-tokens)
+    (lambda (messages system-prompt model max-tokens)
       `(("model" . ,model)
-        ("messages" . [((role . "user")
-                        (content . ,prompt))])
+        ("messages" . ,(vconcat messages))
         ("system" . ,system-prompt)
         ("stream" . t)
         ("max_tokens" . ,max-tokens)))
