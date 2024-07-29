@@ -3,7 +3,7 @@
 (require 'url)
 (require 'json)
 
-(setq groq-api-key "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")
+(setq groq-api-key "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") ;;; TODO: lol
 
 (defun ezllm-parse-buffer (spec)
   "Parse the current buffer and generate JSON for the specified LLM spec."
@@ -73,23 +73,39 @@
             (set-marker marker (point))))
         (redisplay t)))))
 
-(defun ezllm-openai-request ()
-  "Make a request to the API and stream the response to the current buffer."
+(defun ezllm-chat ()
+  "Parse the buffer, prepare the request, and initiate the chat with the LLM."
   (interactive)
-  (ezllm-log "Starting ezllm-openai-request")
-  (let* ((api-key groq-api-key)  ; Replace with your actual API key
-         (json-string (ezllm-parse-buffer 'ezllm-openai))
-         (url "https://api.groq.com/openai/v1/chat/completions")  ; Verify this URL
-         (url-request-method "POST")
-         (url-request-extra-headers
-          `(("Content-Type" . "application/json")
-            ("Accept" . "text/event-stream")
-            ("Authorization" . ,(concat "Bearer " api-key))))  ; Verify if "Bearer " is needed
-         (url-request-data json-string)
+  (let* ((json-string (ezllm-parse-buffer 'ezllm-openai))
          (response-marker (progn
                             (goto-char (point-max))
                             (insert "\n\nASSISTANT: ")
                             (point-marker))))
+    (ezllm-openai-request 
+     json-string
+     (lambda (chunk)
+       (if (eq chunk 'eof)
+           (progn
+             (ezllm-log "End of response")
+             (with-current-buffer (marker-buffer response-marker)
+               (goto-char (marker-position response-marker))
+               (insert "\n\nUSER: ")
+               (set-marker response-marker (point))))
+         (condition-case err
+             (ezllm-process-chunk chunk response-marker)
+           (error (ezllm-log "Error processing chunk: %S" err))))))))
+
+(defun ezllm-openai-request (json-string callback)
+  "Make a request to the API and call CALLBACK with each chunk of the response."
+  (ezllm-log "Starting ezllm-openai-request")
+  (let* ((api-key groq-api-key)
+         (url "https://api.groq.com/openai/v1/chat/completions")
+         (url-request-method "POST")
+         (url-request-extra-headers
+          `(("Content-Type" . "application/json")
+            ("Accept" . "text/event-stream")
+            ("Authorization" . ,(concat "Bearer " api-key))))
+         (url-request-data json-string))
     
     (ezllm-log "Request URL: %s" url)
     (ezllm-log "Request headers: %S" url-request-extra-headers)
@@ -107,22 +123,66 @@
                                (buffer-string))))
          (progn
            (goto-char (point-min))
-           (re-search-forward "\n\n" nil t)  ; Find the end of headers
+           (re-search-forward "\n\n" nil t)
            (ezllm-log "Response headers: %s" (buffer-substring (point-min) (point)))
            (while (not (eobp))
              (let ((chunk (buffer-substring (point) (line-end-position))))
                (ezllm-log "Processing response chunk: %s" chunk)
-               (condition-case err
-                   (ezllm-process-chunk chunk response-marker)
-                 (error (ezllm-log "Error processing chunk: %S" err))))
+               (funcall callback chunk))
              (forward-line 1))
            (ezllm-log "Finished processing response")
-           (with-current-buffer (marker-buffer response-marker)
-             (goto-char (marker-position response-marker))
-             (insert "\n\nUSER: ")
-             (set-marker response-marker (point)))))
+           (funcall callback 'eof)))  ; Signal end of response
        (kill-buffer (current-buffer)))
      nil t)
     
-    (message "Request sent. Streaming response to current buffer...")
+    (message "Request sent. Streaming response...")
     (ezllm-log "Request sent, awaiting response")))
+
+(defun ezllm-quick (model endpoint system tokens)
+  "Send a quick prompt to the specified MODEL and ENDPOINT with SYSTEM message and max TOKENS.
+Use the selected region as the prompt, or the current line if no region is active."
+  (interactive)
+  
+  (let* ((prompt (if (use-region-p)
+                     (buffer-substring-no-properties (region-beginning) (region-end))
+                   (buffer-substring-no-properties (line-beginning-position) (line-end-position))))
+         (json-string (json-encode
+                       `(("model" . ,model)
+                         ("messages" . [(("role" . "system")
+                                         ("content" . ,system))
+                                        (("role" . "user")
+                                         ("content" . ,prompt))])
+                         ("max_tokens" . ,tokens)
+                         ("stream" . t))))
+         (response-marker (progn
+                            (if (use-region-p)
+                                (goto-char (region-end))
+                              (end-of-line))
+                            (insert "\n\n")
+                            (point-marker))))
+    
+    ;; Rest of the function remains the same
+    ;; (with-current-buffer (get-buffer-create "*EZLLM JSON*")
+    ;;   (erase-buffer)
+    ;;   (insert json-string)
+    ;;   (json-pretty-print-buffer)
+    ;;   (display-buffer (current-buffer)))
+    
+    ;;(message "Sending request: %s" (substring json-string 0 100))
+    
+    (ezllm-openai-request 
+     json-string
+     (lambda (chunk)
+       (if (eq chunk 'eof)
+           (ezllm-log "End of quick response")
+         (condition-case err
+             (ezllm-process-chunk chunk response-marker)
+           (error (ezllm-log "Error processing chunk: %S" err))))))))
+
+(global-set-key (kbd "C-c q l")
+                (lambda ()
+                  (interactive)
+                  (ezllm-quick "llama-3.1-8b-instant"
+                               "https://api.groq.com/openai/v1/chat/completions"
+                               "You are a helpful assistant."
+                               2048)))
