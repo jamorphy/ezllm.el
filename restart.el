@@ -3,8 +3,6 @@
 (require 'url)
 (require 'json)
 
-(setq groq-api-key "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") ;;; TODO: lol
-
 (defun ezllm-parse-buffer (spec)
   "Parse the current buffer and generate JSON for the specified LLM spec."
   (interactive
@@ -101,9 +99,9 @@
 (defun ezllm-openai-request (request-data callback)
   "Make a request to the API and call CALLBACK with each chunk of the response."
   (ezllm-log "Starting ezllm-openai-request")
-  (let* ((api-key groq-api-key)
-         (json-string (plist-get request-data :json))
+  (let* ((json-string (plist-get request-data :json))
          (url (or (plist-get request-data :endpoint) "https://api.groq.com/openai/v1/chat/completions"))
+         (api-key (or (plist-get request-data :api-key) mapi-key))
          (url-request-method "POST")
          (url-request-extra-headers
           `(("Content-Type" . "application/json")
@@ -142,9 +140,10 @@
     (message "Request sent. Streaming response...")
     (ezllm-log "Request sent, awaiting response")))
 
-(defun ezllm-quick (model endpoint system tokens)
+(defun ezllm-quick (model endpoint system tokens &optional api-key)
   "Send a quick prompt to the specified MODEL and ENDPOINT with SYSTEM message and max TOKENS.
-Use the selected region as the prompt, or the current line if no region is active."
+Use the selected region as the prompt, or the current line if no region is active.
+If API-KEY is provided, it will be used instead of the default."
   (interactive)
   
   (let* ((prompt (if (use-region-p)
@@ -158,22 +157,13 @@ Use the selected region as the prompt, or the current line if no region is activ
                                          ("content" . ,prompt))])
                          ("max_tokens" . ,tokens)
                          ("stream" . t))))
-         (request-data `(:json ,json-string :endpoint ,endpoint))
+         (request-data `(:json ,json-string :endpoint ,endpoint :api-key ,api-key))
          (response-marker (progn
                             (if (use-region-p)
                                 (goto-char (region-end))
                               (end-of-line))
                             (insert "\n\n")
                             (point-marker))))
-    
-    ;; Rest of the function remains the same
-    ;; (with-current-buffer (get-buffer-create "*EZLLM JSON*")
-    ;;   (erase-buffer)
-    ;;   (insert json-string)
-    ;;   (json-pretty-print-buffer)
-    ;;   (display-buffer (current-buffer)))
-    
-    ;;(message "Sending request: %s" (substring json-string 0 100))
     
     (ezllm-openai-request 
      request-data
@@ -183,11 +173,3 @@ Use the selected region as the prompt, or the current line if no region is activ
          (condition-case err
              (ezllm-process-chunk chunk response-marker)
            (error (ezllm-log "Error processing chunk: %S" err))))))))
-
-(global-set-key (kbd "C-c n")
-                (lambda ()
-                  (interactive)
-                  (ezllm-quick "llama-3.1-8b-instant"
-                               "https://api.groq.com/openai/v1/chat/completions"
-                               "You are LeBron James talking to Michael Jordan."
-                               2048)))
