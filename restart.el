@@ -30,15 +30,15 @@
               (push (list :role current-role :content (string-trim current-content)) messages)
               (setq current-content ""))
             (setq current-role "user")
-            (setq current-content (concat current-content (string-trim (substring line 5)) "\n")))
+            (setq current-content (string-trim (substring line 5))))
            ((string-prefix-p "ASSISTANT:" line)
             (when current-role
               (push (list :role current-role :content (string-trim current-content)) messages)
               (setq current-content ""))
             (setq current-role "assistant")
-            (setq current-content (concat current-content (string-trim (substring line 10)) "\n")))
+            (setq current-content (string-trim (substring line 10))))
            (t
-            (setq current-content (concat current-content line "\n")))))
+            (setq current-content (concat current-content "\n" (string-trim line))))))
         (forward-line 1)))
     
     (when current-role
@@ -46,10 +46,18 @@
     
     (setq messages (nreverse messages))
     
+    (when system-prompt
+      (push (list :role "system" :content system-prompt) messages))
+    
     (let* ((spec-symbol (if (symbolp spec) spec (intern spec)))
            (spec-value (symbol-value spec-symbol))
-           (request (funcall (plist-get spec-value :request-formatter)
-                             messages system-prompt model 2048)))
+           (request (list :model model
+                          :messages (vconcat (mapcar (lambda (msg)
+                                                       (list (cons 'role (plist-get msg :role))
+                                                             (cons 'content (plist-get msg :content))))
+                                                     messages))
+                          :stream t
+                          :max_tokens 2048)))
       (list :json (json-encode request) :endpoint endpoint))))
 
 (defun ezllm-log (message &rest args)
@@ -137,7 +145,7 @@
        (kill-buffer (current-buffer)))
      nil t)
     
-    (message "Request sent. Streaming response...")
+    ;;(message "Request sent. Streaming response...")
     (ezllm-log "Request sent, awaiting response")))
 
 (defun ezllm-quick (model endpoint system tokens &optional api-key)
@@ -173,3 +181,12 @@ If API-KEY is provided, it will be used instead of the default."
          (condition-case err
              (ezllm-process-chunk chunk response-marker)
            (error (ezllm-log "Error processing chunk: %S" err))))))))
+
+(defun ezllm-new-chat ()
+  "Create a new buffer for an LLM chat with predefined content."
+  (interactive)
+  (let ((buffer (generate-new-buffer "*LLM Chat*")))
+    (with-current-buffer buffer
+      (insert "MODEL:\nENDPOINT:\nSYSTEM:\n\nUSER:\n")
+      (goto-char (point-min)))
+    (switch-to-buffer buffer)))
