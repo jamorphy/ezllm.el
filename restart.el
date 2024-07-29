@@ -11,6 +11,7 @@
    (list (intern (completing-read "Choose spec: " '("ezllm-openai" "ezllm-anthropic") nil t))))
   (let ((model nil)
         (system-prompt nil)
+        (endpoint nil)
         (messages '())
         (current-role nil)
         (current-content ""))
@@ -24,6 +25,8 @@
             (setq model (string-trim (substring line 6))))
            ((string-prefix-p "SYSTEM:" line)
             (setq system-prompt (string-trim (substring line 7))))
+           ((string-prefix-p "ENDPOINT:" line)
+            (setq endpoint (string-trim (substring line 9))))
            ((string-prefix-p "USER:" line)
             (when current-role
               (push (list :role current-role :content (string-trim current-content)) messages)
@@ -49,7 +52,7 @@
            (spec-value (symbol-value spec-symbol))
            (request (funcall (plist-get spec-value :request-formatter)
                              messages system-prompt model 2048)))
-      (json-encode request))))
+      (list :json (json-encode request) :endpoint endpoint))))
 
 (defun ezllm-log (message &rest args)
   "Log a debug MESSAGE with ARGS to the *EZLLM Debug* buffer."
@@ -76,13 +79,13 @@
 (defun ezllm-chat ()
   "Parse the buffer, prepare the request, and initiate the chat with the LLM."
   (interactive)
-  (let* ((json-string (ezllm-parse-buffer 'ezllm-openai))
+  (let* ((parsed-data (ezllm-parse-buffer 'ezllm-openai))
          (response-marker (progn
                             (goto-char (point-max))
                             (insert "\n\nASSISTANT: ")
                             (point-marker))))
     (ezllm-openai-request 
-     json-string
+     parsed-data
      (lambda (chunk)
        (if (eq chunk 'eof)
            (progn
@@ -95,11 +98,12 @@
              (ezllm-process-chunk chunk response-marker)
            (error (ezllm-log "Error processing chunk: %S" err))))))))
 
-(defun ezllm-openai-request (json-string callback)
+(defun ezllm-openai-request (request-data callback)
   "Make a request to the API and call CALLBACK with each chunk of the response."
   (ezllm-log "Starting ezllm-openai-request")
   (let* ((api-key groq-api-key)
-         (url "https://api.groq.com/openai/v1/chat/completions")
+         (json-string (plist-get request-data :json))
+         (url (or (plist-get request-data :endpoint) "https://api.groq.com/openai/v1/chat/completions"))
          (url-request-method "POST")
          (url-request-extra-headers
           `(("Content-Type" . "application/json")
@@ -154,6 +158,7 @@ Use the selected region as the prompt, or the current line if no region is activ
                                          ("content" . ,prompt))])
                          ("max_tokens" . ,tokens)
                          ("stream" . t))))
+         (request-data `(:json ,json-string :endpoint ,endpoint))
          (response-marker (progn
                             (if (use-region-p)
                                 (goto-char (region-end))
@@ -171,7 +176,7 @@ Use the selected region as the prompt, or the current line if no region is activ
     ;;(message "Sending request: %s" (substring json-string 0 100))
     
     (ezllm-openai-request 
-     json-string
+     request-data
      (lambda (chunk)
        (if (eq chunk 'eof)
            (ezllm-log "End of quick response")
@@ -179,10 +184,10 @@ Use the selected region as the prompt, or the current line if no region is activ
              (ezllm-process-chunk chunk response-marker)
            (error (ezllm-log "Error processing chunk: %S" err))))))))
 
-(global-set-key (kbd "C-c q l")
+(global-set-key (kbd "C-c n")
                 (lambda ()
                   (interactive)
                   (ezllm-quick "llama-3.1-8b-instant"
                                "https://api.groq.com/openai/v1/chat/completions"
-                               "You are a helpful assistant."
+                               "You are LeBron James talking to Michael Jordan."
                                2048)))
